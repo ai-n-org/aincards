@@ -43,7 +43,7 @@
         <div class="fs-header">
             <div style="display:flex; gap:8px;">
                 <button class="btn btn-ghost" onclick="app.toggleFullscreenFlip()"><i class="fas fa-sync-alt"></i> Flip</button>
-                <button class="btn btn-ghost" onclick="app.setCardView('grid')"><i class="fas fa-th-large"></i> Exit</button>
+                <button class="btn btn-ghost" onclick="app.toggleNativeFullscreen()"><i class="fas fa-expand"></i> Native</button>
             </div>
             <div style="display:flex; gap:8px;">
                  <button class="btn btn-ghost" onclick="app.readCurrentFullscreen()"><i class="fas fa-volume-up"></i></button>
@@ -51,6 +51,12 @@
             </div>
         </div>
         <div class="fs-content" id="fsContent">
+            <!-- Request Pane (Optional, usually hidden in single view, but available if flipped) -->
+            <div class="fs-pane" id="fsRequestPane" style="display:none;">
+                <h3>Request</h3>
+                <div id="fsRequest"></div>
+            </div>
+            <!-- Response Pane (Main) -->
             <div class="fs-pane" id="fsResponsePane">
                 <h3>Response</h3>
                 <div id="fsResponse"></div>
@@ -59,8 +65,17 @@
     </div>
 
     <!-- Grid Area -->
-    <div id="grid">
-        <div id="emptyState">No cards yet. Type below to start.</div>
+    <!-- Added tabindex for keyboard navigation -->
+    <div id="grid" tabindex="0">
+        <div id="emptyState">
+            <h3>Start Creating</h3>
+            <p>Type below to ask the AI.</p>
+            <div style="margin-top: 20px; opacity: 0.6; font-size: 0.9em;">
+                <i class="fas fa-hand-pointer"></i> Tap cards to flip<br>
+                <i class="fas fa-fingerprint"></i> Long press for menu<br>
+                <i class="fas fa-magic"></i> Use <code>!theme:...</code> in AI responses
+            </div>
+        </div>
     </div>
 
     <!-- View Button (Bottom Right) -->
@@ -93,14 +108,21 @@
 
     <!-- Modals -->
 
-    <!-- 1. Main Menu (Import/Export) -->
+    <!-- 1. Main Menu (Import/Export/Settings) -->
     <div class="modal-overlay" id="settingsModal">
         <div class="modal">
             <div class="modal-header">
-                <h3>Main Menu</h3>
+                <h3>Settings & Menu</h3>
                 <button class="btn btn-ghost" onclick="app.closeModal('settingsModal')"><i class="fas fa-times"></i></button>
             </div>
             <div class="modal-body">
+                
+                <div class="style-section">
+                    <h4>API Configuration</h4>
+                    <input type="text" id="proxyUrlInput" placeholder="Proxy URL (Default provided)" style="width:100%; margin-bottom:8px;">
+                    <small style="color:var(--text); opacity:0.7;">Leave empty to use default proxy. Add your own Cloudflare/OpenAI endpoint URL.</small>
+                </div>
+
                 <div class="style-section">
                     <h4>Data Management</h4>
                     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom: 16px;">
@@ -112,21 +134,16 @@
                 </div>
 
                 <div class="style-section">
-                    <h4>Theme</h4>
+                    <h4>Theme & View</h4>
                     <div class="toggle-group" style="margin-bottom:10px;">
                         <button class="toggle-btn" onclick="app.toggleThemeMode()">Toggle Light/Dark</button>
                         <button class="toggle-btn" onclick="app.toggleThemeLock()">
                             <i class="fas fa-lock"></i> <span id="lockLabel">Lock Theme</span>
                         </button>
                     </div>
-                    <button class="btn btn-ghost" onclick="app.saveAppearance()">Save Appearance</button>
-                </div>
-
-                <div class="style-section">
-                    <h4>View Mode</h4>
                     <div class="toggle-group">
                         <button class="toggle-btn" onclick="app.setCardView('list')">List</button>
-                        <button class="toggle-btn" onclick="app.setCardView('grid')">Grid (2x2)</button>
+                        <button class="toggle-btn" onclick="app.setCardView('grid')">Grid</button>
                         <button class="toggle-btn" onclick="app.setCardView('full')">Fullscreen</button>
                     </div>
                 </div>

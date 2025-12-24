@@ -1,4 +1,4 @@
-const PROXY_URL = "https://ai-proxy.ai-n.workers.dev/api/generate";
+const DEFAULT_PROXY_URL = "https://ai-proxy.ai-n.workers.dev/api/generate";
 const STORAGE_KEY = "ai_ndraft_data_v2";
 
 const SYSTEM_PROMPT = `You are a helpful, casual AI assistant. You can control styling and app behavior.
@@ -16,9 +16,6 @@ Example 1 (Style + Action):
 !theme:Gold,#1a1a1a,#2a2a2a,#ffd700,#ffd700,#b8860b!
 Hello World
 !action:view:grid!
-
-Example 2 (Clear):
-!action:clear!
 
 User requests are natural language. Be efficient.`;
 
@@ -39,7 +36,8 @@ class App {
         this.settings = {
             view: 'list',
             autoTTS: false,
-            asrEnabled: false
+            asrEnabled: false,
+            proxyUrl: ''
         };
 
         this.streamingId = null;
@@ -68,18 +66,22 @@ class App {
         this.renderAll();
         this.updateToggles();
         
-        // Auto-scroll listeners
+        const proxyInput = document.getElementById('proxyUrlInput');
+        if (proxyInput && this.settings.proxyUrl) proxyInput.value = this.settings.proxyUrl;
+
         document.getElementById('stylePadding').addEventListener('input', (e) => document.getElementById('valPad').textContent = e.target.value + 'px');
         document.getElementById('styleRadius').addEventListener('input', (e) => document.getElementById('valRad').textContent = e.target.value + 'px');
         document.getElementById('styleWidth').addEventListener('input', (e) => document.getElementById('valWid').textContent = e.target.value + 'px');
+    }
 
-        // Auto-scroll to bottom when streaming
-        window.addEventListener('scroll', () => {
-            if (this.streamingId && this.fullscreenId === this.streamingId) {
-                const fsPane = document.getElementById('fsResponsePane');
-                if (fsPane) fsPane.scrollTop = fsPane.scrollHeight;
-            }
-        });
+    getProxyUrl() {
+        const inputVal = document.getElementById('proxyUrlInput')?.value.trim();
+        if (inputVal) {
+            this.settings.proxyUrl = inputVal;
+            this.saveState();
+            return inputVal;
+        }
+        return this.settings.proxyUrl || DEFAULT_PROXY_URL;
     }
 
     bindEvents() {
@@ -264,7 +266,7 @@ class App {
         
         const el = document.querySelector(`.flip-card[data-id="${id}"]`);
         if (el) {
-            if (q !== null) el.querySelector('.card-face:first-child').innerHTML = this.md(q);
+            if (q !== null) el.querySelector('.card-face:first-child .content').innerHTML = this.md(q);
             if (r !== null) {
                 const rEl = el.querySelector('.response-content');
                 if (rEl) rEl.innerHTML = this.md(r);
@@ -280,7 +282,7 @@ class App {
         
         if (this.cards.length === 0) {
             grid.appendChild(empty);
-            empty.style.display = 'block';
+            empty.style.display = 'flex';
         } else {
             empty.style.display = 'none';
             this.cards.forEach(c => this.renderCard(c, false));
@@ -295,6 +297,7 @@ class App {
         const div = document.createElement('div');
         div.className = `flip-card ${isNew ? 'new' : ''}`;
         div.dataset.id = card.id;
+        div.tabIndex = 0;
         
         if (card.styles && card.styles.locked) {
             div.classList.add('locked');
@@ -338,51 +341,54 @@ class App {
 
         if (card.styles) this.applyCardStyleToEl(div, card.styles);
 
-        // --- TOUCH INTERACTIONS ---
-        
-        // 1. Short Tap: Flip
+        this.attachCardEvents(div, card.id);
+        grid.appendChild(div);
+    }
+
+    attachCardEvents(div, id) {
         div.addEventListener('click', (e) => {
             if (e.target.closest('button') || e.target.closest('.card-actions')) return;
             if (this.selectedIds.size > 0) {
                 e.stopPropagation();
-                this.toggleSelect(card.id, e);
+                this.toggleSelect(id, e);
                 return;
             }
             div.classList.toggle('flipped');
-            if (this.settings.view === 'full') this.openFullscreen(card.id);
         });
 
-        // 2. Double Tap: Flip
         let lastTap = 0;
         div.addEventListener('touchend', (e) => {
             const currentTime = new Date().getTime();
             const tapLength = currentTime - lastTap;
             if (tapLength < 300 && tapLength > 0) {
                 if (e.target.closest('button') || e.target.closest('.card-actions')) return;
-                div.classList.toggle('flipped');
+                this.openFullscreen(id);
                 e.preventDefault();
             }
             lastTap = currentTime;
         });
+        div.addEventListener('dblclick', (e) => {
+            if (!e.target.closest('button')) this.openFullscreen(id);
+        });
 
-        // 3. Long Press: Menu
         let pressTimer;
         div.addEventListener('touchstart', (e) => {
             if (this.selectedIds.size > 0) return;
             pressTimer = setTimeout(() => {
-                this.openCardMenu(card.id, e);
+                this.openCardMenu(id, e);
                 if (navigator.vibrate) navigator.vibrate(50);
             }, 400);
         });
         div.addEventListener('touchend', () => clearTimeout(pressTimer));
         div.addEventListener('touchmove', () => clearTimeout(pressTimer));
 
-        // 4. Double Click (Desktop)
-        div.addEventListener('dblclick', (e) => {
-            if (!e.target.closest('button')) this.openFullscreen(card.id);
+        div.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') div.classList.toggle('flipped');
+            if (e.key === ' ' && e.shiftKey) {
+                e.preventDefault();
+                this.openCardMenu(id);
+            }
         });
-
-        grid.appendChild(div);
     }
 
     handleSendClick() {
@@ -404,24 +410,15 @@ class App {
         input.value = '';
     }
 
-    // NEW: Scroll helper method
     scrollToBottom(element, force = false) {
         if (!element) return;
-        if (force) {
-            // Force scroll during streaming regardless of user position
+        const isNearBottom = (element.scrollHeight - element.scrollTop - element.clientHeight) < 150;
+        if (force || isNearBottom) {
             element.scrollTop = element.scrollHeight;
-        } else {
-            // Only scroll if user is near bottom
-            const isNearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 100;
-            if (isNearBottom) {
-                element.scrollTop = element.scrollHeight;
-            }
         }
     }
 
     async sendRequest(prompt, contextCardId = null) {
-        // We do NOT toggle a loading screen here anymore.
-        // We add the card immediately with "Thinking..." text.
         this.streamingId = contextCardId ? contextCardId : this.addCard(prompt, '...', {});
         
         const cardEl = document.querySelector(`.flip-card[data-id="${this.streamingId}"]`);
@@ -431,23 +428,24 @@ class App {
         if (contextCardId) {
             const oldCard = this.cards.find(c => c.id === contextCardId);
             if (oldCard) {
-                fullPrompt = `Previous Request: ${oldCard.q}\nPrevious Response: ${oldCard.r}\n\nUser Instruction: ${prompt}\n\nProvide a continuation or refinement.`;
+                const styleContext = (oldCard.styles && oldCard.styles.locked) ? `(Note: Original card has locked styles)` : '';
+                fullPrompt = `Previous Request: "${oldCard.q}"\nPrevious Response: "${oldCard.r}" ${styleContext}\n\nUser Instruction: ${prompt}\n\nProvide a continuation or refinement.`;
             }
         }
 
-        // NEW: Create abort controller
         this.abortController = new AbortController();
         const signal = this.abortController.signal;
 
         try {
-            const res = await fetch(PROXY_URL, {
+            const url = this.getProxyUrl();
+            const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessionId: this.sessionId, prompt: fullPrompt }),
-                signal // NEW: Add abort signal
+                signal
             });
 
-            if (!res.ok) throw new Error("Proxy Error");
+            if (!res.ok) throw new Error(`Proxy Error: ${res.status}`);
 
             const reader = res.body.getReader();
             let buffer = '';
@@ -469,7 +467,6 @@ class App {
                         const chunk = json.choices?.[0]?.delta?.content;
                         if (chunk) {
                             accumulated += chunk;
-                            // If it's the first chunk, replace "Thinking" with the actual content
                             if (isFirstChunk) {
                                 this.updateStreamingContent(accumulated, true);
                                 isFirstChunk = false;
@@ -484,27 +481,19 @@ class App {
             this.finalizeResponse(accumulated);
 
         } catch (err) {
-            // MODIFIED: Handle abort specifically
             if (err.name === 'AbortError') {
                 const el = document.querySelector(`.flip-card[data-id="${this.streamingId}"] .response-content`);
-                if (el) {
-                    const currentContent = el.innerHTML;
-                    el.innerHTML = currentContent + '<div style="color:#ff6b6b; margin-top:10px;">[Streaming Stopped by User]</div>';
-                }
-                this.streamingId = null;
-                return;
+                if (el) el.innerHTML += '<div style="color:#ff6b6b; margin-top:10px;">[Stopped]</div>';
+            } else {
+                const el = document.querySelector(`.flip-card[data-id="${this.streamingId}"] .response-content`);
+                if (el) el.innerHTML = `<span style="color: #ff6b6b; font-weight: bold;">Error: ${err.message}</span>`;
             }
-            // Show error IN the card, don't alert
-            const el = document.querySelector(`.flip-card[data-id="${this.streamingId}"] .response-content`);
-            if (el) el.innerHTML = `<span style="color: #ff6b6b; font-weight: bold;">Error: ${err.message}</span>`;
-            this.streamingId = null; 
+            this.streamingId = null;
         } finally {
-            // NEW: Clean up abort controller
             this.abortController = null;
         }
     }
 
-    // NEW: Stop stream method
     stopStream() {
         if (this.abortController) {
             this.abortController.abort();
@@ -513,33 +502,30 @@ class App {
         }
     }
 
-    // MODIFIED: Now calls scrollToBottom with FORCE
     updateStreamingContent(text, replace = false) {
         if (!this.streamingId) return;
         const visible = text.replace(/![^!]+!/g, '');
-        const el = document.querySelector(`.flip-card[data-id="${this.streamingId}"] .response-content`);
         
+        const el = document.querySelector(`.flip-card[data-id="${this.streamingId}"] .response-content`);
         if (el) {
             if (replace) {
-                el.innerHTML = this.md(visible); // Replace "Thinking..."
+                el.innerHTML = this.md(visible);
             } else {
                 el.innerHTML = this.md(visible) + '<div class="streaming"><span class="cursor"></span></div>';
             }
-            // FORCE SCROLL during streaming
-            this.scrollToBottom(el, true);
+            this.scrollToBottom(el, replace);
         }
 
         if (this.fullscreenId === this.streamingId) {
             const fsEl = document.getElementById('fsResponse');
             if (fsEl) {
-                // MODIFIED: Add streaming indicator to fullscreen too
                 if (replace) {
                     fsEl.innerHTML = this.md(visible);
                 } else {
                     fsEl.innerHTML = this.md(visible) + '<div class="streaming"><span class="cursor"></span></div>';
                 }
-                // FORCE SCROLL in fullscreen
-                this.scrollToBottom(fsEl, true);
+                const fsPane = document.getElementById('fsResponsePane');
+                this.scrollToBottom(fsPane, replace);
             }
         }
     }
@@ -687,9 +673,15 @@ class App {
             x = e.touches[0].clientX;
             y = e.touches[0].clientY;
         } else {
-            const rect = document.querySelector(`.flip-card[data-id="${id}"]`).getBoundingClientRect();
-            x = rect.left + rect.width / 2;
-            y = rect.top + rect.height / 2;
+            const el = document.querySelector(`.flip-card[data-id="${id}"]`);
+            if (el) {
+                const rect = el.getBoundingClientRect();
+                x = rect.left + rect.width / 2;
+                y = rect.top + rect.height / 2;
+            } else {
+                x = window.innerWidth / 2;
+                y = window.innerHeight / 2;
+            }
         }
 
         if (x + 200 > window.innerWidth) x = window.innerWidth - 210;
@@ -713,21 +705,16 @@ class App {
             case 'continue': this.promptAction('continue', id); break;
             case 'split': this.promptAction('split', id); break;
             case 'merge':
-                // Ensure clicked card is selected
                 if (!this.selectedIds.has(id)) {
                     this.selectedIds.add(id);
                     const el = document.querySelector(`.flip-card[data-id="${id}"]`);
                     if (el) el.classList.add('selected');
                 }
-                
-                // Check if we have at least 2 cards
                 if (this.selectedIds.size < 2) {
                     this.showToast("Need at least 2 cards to merge");
                     this.updateSelectionUI();
                     return;
                 }
-                
-                // Update selection UI and proceed
                 this.updateSelectionUI();
                 this.promptAction('merge');
                 break;
@@ -939,17 +926,19 @@ class App {
     }
 
     async requestMergeUpdate(id, prompt) {
-        // NEW: Create abort controller
         this.abortController = new AbortController();
         const signal = this.abortController.signal;
 
         try {
-            const res = await fetch(PROXY_URL, {
+            const url = this.getProxyUrl();
+            const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessionId: this.sessionId, prompt: SYSTEM_PROMPT + "\n\nUser: " + prompt }),
-                signal // NEW: Add abort signal
+                signal
             });
+            if (!res.ok) throw new Error("Proxy Error");
+            
             const reader = res.body.getReader();
             let buffer = '';
             let accumulated = '';
@@ -982,10 +971,7 @@ class App {
         } catch (err) {
             if (err.name === 'AbortError') {
                 const el = document.querySelector(`.flip-card[data-id="${id}"] .response-content`);
-                if (el) {
-                    const currentContent = el.innerHTML;
-                    el.innerHTML = currentContent + '<div style="color:#ff6b6b; margin-top:10px;">[Merge Stopped by User]</div>';
-                }
+                if (el) el.innerHTML += '<div style="color:#ff6b6b;">[Merge Stopped]</div>';
                 return;
             }
             const el = document.querySelector(`.flip-card[data-id="${id}"] .response-content`);
@@ -1022,7 +1008,8 @@ Do not output any other text.`;
         this.closeModal('aiThemeModal');
         this.showToast("Generating Theme...");
         
-        fetch(PROXY_URL, {
+        const url = this.getProxyUrl();
+        fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: prompt })
@@ -1105,13 +1092,7 @@ Do not output any other text.`;
         this.clearSelection();
         this.saveState();
         if (this.cards.length === 0) {
-            const grid = document.getElementById('grid');
-            if (!document.getElementById('emptyState')) {
-                const empty = document.createElement('div');
-                empty.id = 'emptyState';
-                empty.textContent = "No cards yet. Type below to start.";
-                grid.appendChild(empty);
-            }
+            this.renderAll();
         }
     }
 
@@ -1122,27 +1103,27 @@ Do not output any other text.`;
         this.fullscreenId = id;
         this.fsFlipped = false;
 
-        // MODIFIED: Only show response in fullscreen, no request column
-        // Update the header to show request as a tooltip or title
-        const header = document.querySelector('.fs-header h3');
-        if (header) header.textContent = `Response: ${card.q.substring(0, 50)}...`;
-        
-        // MODIFIED: Show streaming indicator in fullscreen if streaming
+        const headerTitle = document.querySelector('.fs-header h3');
+        if (headerTitle) headerTitle.textContent = `Response: ${card.q.substring(0, 50)}...`;
+
+        const requestPane = document.getElementById('fsRequestPane');
+        const requestContent = document.getElementById('fsRequest');
+        requestContent.innerHTML = this.md(card.q);
+        requestPane.style.display = 'none';
+
+        const responseContent = document.getElementById('fsResponse');
         if (card.r === '...' && this.streamingId === id) {
-            document.getElementById('fsResponse').innerHTML = '<div class="streaming"><span class="thinking-indicator">Thinking...</span><button class="stop-stream-btn" onclick="app.stopStream()">Stop</button></div>';
+            responseContent.innerHTML = '<div class="streaming"><span class="thinking-indicator">Thinking...</span><button class="stop-stream-btn" onclick="app.stopStream()">Stop</button></div>';
         } else {
-            document.getElementById('fsResponse').innerHTML = this.md(card.r);
+            responseContent.innerHTML = this.md(card.r);
         }
 
         const ov = document.getElementById('fullscreenOverlay');
         ov.classList.add('active');
         
-        // MODIFIED: Ensure fullscreen pane scrolls correctly
         setTimeout(() => {
             const responsePane = document.getElementById('fsResponsePane');
-            if (responsePane) {
-                responsePane.scrollTop = responsePane.scrollHeight;
-            }
+            if (responsePane) responsePane.scrollTop = responsePane.scrollHeight;
         }, 50);
     }
 
@@ -1154,16 +1135,27 @@ Do not output any other text.`;
     toggleFullscreenFlip() {
         if (!this.fullscreenId) return;
         this.fsFlipped = !this.fsFlipped;
-        const content = document.getElementById('fsContent');
-        content.style.transform = this.fsFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)';
-        content.style.transformStyle = 'preserve-3d';
-        content.style.backfaceVisibility = 'hidden';
+        const requestPane = document.getElementById('fsRequestPane');
+        const responsePane = document.getElementById('fsResponsePane');
         
-        // MODIFIED: Fix the pane for 3D flip
-        const pane = content.querySelector('.fs-pane');
-        if (pane) {
-            pane.style.backfaceVisibility = 'hidden';
-            pane.style.transform = this.fsFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)';
+        if (this.fsFlipped) {
+            requestPane.style.display = 'block';
+            responsePane.style.display = 'none';
+        } else {
+            requestPane.style.display = 'none';
+            responsePane.style.display = 'block';
+        }
+    }
+
+    toggleNativeFullscreen() {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch((e) => {
+                this.showToast("Fullscreen blocked by browser");
+            });
+        } else {
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            }
         }
     }
     
@@ -1212,6 +1204,12 @@ Do not output any other text.`;
     }
 
     saveAppearance() {
+        const proxyInput = document.getElementById('proxyUrlInput');
+        if (proxyInput && proxyInput.value.trim()) {
+            this.settings.proxyUrl = proxyInput.value.trim();
+            this.saveState();
+        }
+        
         this.pushHistory("Appearance Save");
         this.showToast("Appearance Saved");
     }
@@ -1281,10 +1279,11 @@ Do not output any other text.`;
         if (e && e.stopPropagation) e.stopPropagation();
         const card = this.cards.find(c => c.id === id);
         if (!card || !card.r) return;
+        
         if (responsiveVoice.isPlaying()) {
             responsiveVoice.cancel();
         } else {
-            const text = card.r.replace(/[#*_`]/g, '').substring(0, 2000);
+            const text = card.r.replace(/[#*_`>~-]/g, '').substring(0, 2000);
             responsiveVoice.speak(text, "US English Female", { rate: 1.1 });
         }
     }
@@ -1298,7 +1297,12 @@ Do not output any other text.`;
 
     md(text) {
         if (!text) return '';
-        return DOMPurify.sanitize(marked.parse(text));
+        try {
+            return DOMPurify.sanitize(marked.parse(text));
+        } catch (e) {
+            console.error("Markdown parsing error", e);
+            return text;
+        }
     }
 }
 
