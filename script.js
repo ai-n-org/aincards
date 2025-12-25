@@ -1,7 +1,8 @@
 const DEFAULT_PROXY_URL = "https://ai-proxy.ai-n.workers.dev/api/generate";
 const STORAGE_KEY = "ai_ndraft_data_v2";
 
-const SYSTEM_PROMPT = `You are a helpful, casual AI assistant. You can control styling and app behavior.
+// UPDATED PROMPT: "Document Drafter" persona
+const SYSTEM_PROMPT = `You are a helpful AI Document Drafter. You help build documents card by card.
 
 1. VISUAL STYLING (Start of response):
    - Page Theme: !theme:Name,BgHex,CardBgHex,TextHex,BorderHex,PrimaryHex!
@@ -12,12 +13,12 @@ const SYSTEM_PROMPT = `You are a helpful, casual AI assistant. You can control s
    - !action:clear! (Clears the entire board)
    - !action:view:grid! or !action:view:list! or !action:view:full! (Changes view)
 
-Example 1 (Style + Action):
-!theme:Gold,#1a1a1a,#2a2a2a,#ffd700,#ffd700,#b8860b!
-Hello World
-!action:view:grid!
+3. CARD EDITING:
+   - To EDIT the REQUEST: Say "New Request: [text]".
+   - To EDIT the RESPONSE: Say "New Response: [text]" or simply provide the improved answer.
+   - To STYLE: Use !text:#hex! !bold! etc.
 
-User requests are natural language. Be efficient.`;
+User requests are natural language. You are building a document.`;
 
 class App {
     constructor() {
@@ -25,7 +26,7 @@ class App {
         this.history = []; 
         this.sessionId = "sess_" + Date.now();
         this.theme = {
-            name: 'ai-Ndraft',
+            name: 'ai-Ncards',
             primary: '#c41e3a',
             bg: '#121212',
             cardBg: '#1e1e1e',
@@ -198,7 +199,7 @@ class App {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `ai_ndraft_export_${Date.now()}.json`;
+        a.download = `ai_ncards_export_${Date.now()}.json`;
         a.click();
         this.showToast("Export downloaded");
     }
@@ -238,6 +239,13 @@ class App {
             this.renderAll();
             this.closeModal('settingsModal');
             this.showToast("Grid Cleared");
+        }
+    }
+
+    resetApp() {
+        if (confirm("WARNING: This will delete ALL data, settings, and history. The app will restart to the welcome screen. Are you sure?")) {
+            localStorage.removeItem(STORAGE_KEY);
+            window.location.reload();
         }
     }
 
@@ -410,10 +418,10 @@ class App {
         input.value = '';
     }
 
-    scrollToBottom(element, force = false) {
+    scrollToStreamingContent(element) {
         if (!element) return;
         const isNearBottom = (element.scrollHeight - element.scrollTop - element.clientHeight) < 150;
-        if (force || isNearBottom) {
+        if (isNearBottom) {
             element.scrollTop = element.scrollHeight;
         }
     }
@@ -428,8 +436,8 @@ class App {
         if (contextCardId) {
             const oldCard = this.cards.find(c => c.id === contextCardId);
             if (oldCard) {
-                const styleContext = (oldCard.styles && oldCard.styles.locked) ? `(Note: Original card has locked styles)` : '';
-                fullPrompt = `Previous Request: "${oldCard.q}"\nPrevious Response: "${oldCard.r}" ${styleContext}\n\nUser Instruction: ${prompt}\n\nProvide a continuation or refinement.`;
+                // If we are refining, give the AI the context and the specific request
+                fullPrompt = `PREVIOUS STATE:\nRequest: "${oldCard.q}"\nResponse: "${oldCard.r}"\n\nNEW INSTRUCTIONS:\n${prompt}\n\nPlease refine the card based on instructions. If you want to change the Request, say "New Request: ...". If you want to change the Response, say "New Response: ..." or provide the new text.`;
             }
         }
 
@@ -513,19 +521,18 @@ class App {
             } else {
                 el.innerHTML = this.md(visible) + '<div class="streaming"><span class="cursor"></span></div>';
             }
-            this.scrollToBottom(el, replace);
+            this.scrollToStreamingContent(el);
         }
 
         if (this.fullscreenId === this.streamingId) {
-            const fsEl = document.getElementById('fsResponse');
-            if (fsEl) {
+            const fsPane = document.getElementById('fsResponsePane');
+            if (fsPane) {
                 if (replace) {
-                    fsEl.innerHTML = this.md(visible);
+                    document.getElementById('fsResponse').innerHTML = this.md(visible);
                 } else {
-                    fsEl.innerHTML = this.md(visible) + '<div class="streaming"><span class="cursor"></span></div>';
+                    document.getElementById('fsResponse').innerHTML = this.md(visible) + '<div class="streaming"><span class="cursor"></span></div>';
                 }
-                const fsPane = document.getElementById('fsResponsePane');
-                this.scrollToBottom(fsPane, replace);
+                this.scrollToStreamingContent(fsPane);
             }
         }
     }
@@ -538,26 +545,78 @@ class App {
         const card = this.cards.find(c => c.id === id);
         
         if (card) {
-            if (card.styles && card.styles.locked) {
-                this.showToast("Card Locked - Style changes ignored");
-            } else {
-                if (Object.keys(styles).length > 0) {
-                    card.styles = { ...card.styles, ...styles };
-                }
+            // Specific Logic for "New Request" or "New Response" extraction from cleanText
+            // If the AI followed instructions, it might have output text like "New Request: ... \n New Response: ..."
+            // Or it might have just output the new Response.
+            // We will rely on the fact that if the prompt asked to edit the request, the AI should ideally return the structure.
+            // However, to be safe, we update the Card properties directly if we detect specific patterns in cleanText.
+            // But since the AI is smart, we usually just update the Card content based on what came back.
+            
+            // Check if cleanText contains "New Request:" or "New Response:"
+            let newQ = null;
+            let newR = null;
+            
+            const reqMatch = cleanText.match(/New Request:\s*(.+)/i);
+            const respMatch = cleanText.match(/New Response:\s*(.+)/i);
+
+            if (reqMatch) {
+                newQ = reqMatch[1].trim();
             }
-            card.r = cleanText;
+            if (respMatch) {
+                newR = respMatch[1].trim();
+            }
+
+            // If we found explicit instructions, update accordingly
+            if (newQ) {
+                card.q = newQ;
+                // If only request was edited, we might want to keep the old response or clear it? 
+                // Let's keep the old response if only Request changed.
+                if (!newR) newR = card.r; 
+            }
+            
+            if (newR) {
+                card.r = newR;
+            }
+
+            // If no explicit markers, treat the whole output as the new Response (unless card was empty)
+            if (!newQ && !newR) {
+                 if (card.styles && card.styles.locked) {
+                    this.showToast("Card Locked - Style changes ignored");
+                } else {
+                    if (Object.keys(styles).length > 0) {
+                        card.styles = { ...card.styles, ...styles };
+                    }
+                }
+                // Only update response if we aren't explicitly editing request
+                if (cleanText) card.r = cleanText;
+            }
+
+            // If a new Q was set, update it now
+            if (newQ) {
+                card.q = newQ;
+            }
         }
 
-        const cleanHtml = this.md(cleanText);
+        const finalDisplayText = card ? card.r : cleanText; 
+        const cleanHtml = this.md(finalDisplayText);
+        
         const el = document.querySelector(`.flip-card[data-id="${id}"] .response-content`);
         if (el) el.innerHTML = cleanHtml;
 
         if (this.fullscreenId === id) {
             document.getElementById('fsResponse').innerHTML = cleanHtml;
+            const fsPane = document.getElementById('fsResponsePane');
+            if (fsPane) fsPane.scrollTop = fsPane.scrollHeight;
+        }
+
+        // Update request side if it changed
+        if (card && card.q) {
+            const qEl = document.querySelector(`.flip-card[data-id="${id}"] .card-face:first-child .content`);
+            if (qEl) qEl.innerHTML = this.md(card.q);
         }
 
         if (card && (!card.styles || !card.styles.locked)) {
-            if (Object.keys(styles).length > 0) {
+            if (Object.keys(styles).length > 0 && !this.theme.locked) {
                 const cardEl = document.querySelector(`.flip-card[data-id="${id}"]`);
                 if (cardEl) this.applyCardStyleToEl(cardEl, styles);
             }
@@ -685,7 +744,7 @@ class App {
         }
 
         if (x + 200 > window.innerWidth) x = window.innerWidth - 210;
-        if (y + 300 > window.innerHeight) y = window.innerHeight - 310;
+        if (y + 350 > window.innerHeight) y = window.innerHeight - 360;
 
         menu.style.left = `${x}px`;
         menu.style.top = `${y}px`;
@@ -718,10 +777,9 @@ class App {
                 this.updateSelectionUI();
                 this.promptAction('merge');
                 break;
-            case 'ai-edit': this.promptAction('ai-edit', id); break;
-            case 'ai-theme': 
-                this.editingId = id; 
-                this.openModal('aiThemeModal'); 
+            case 'ai-edit': 
+                // This is the "Magic Action" entry point
+                this.promptAction('magic', id); 
                 break;
             case 'copy': 
                 navigator.clipboard.writeText(card.r || card.q || '');
@@ -739,14 +797,6 @@ class App {
                 this.loadStyleValues(card.styles || {});
                 this.openModal('styleModal');
                 break;
-            case 'manual-edit-response':
-                this.editingId = id; this.editingField = 'r';
-                this.openEditor(card.r);
-                break;
-            case 'manual-edit-question':
-                this.editingId = id; this.editingField = 'q';
-                this.openEditor(card.q);
-                break;
         }
     }
 
@@ -761,9 +811,9 @@ class App {
         if (id === 'textEditorModal') { this.editingId = null; this.editingField = null; }
     }
 
-    openEditor(text) {
+    openEditor(text, title) {
         document.getElementById('textEditorArea').value = text;
-        document.getElementById('editorTitle').textContent = `Edit ${this.editingField === 'q' ? 'Question' : 'Response'}`;
+        document.getElementById('editorTitle').textContent = title;
         this.openModal('textEditorModal');
     }
 
@@ -807,6 +857,12 @@ class App {
     saveStyles() {
         if (!this.stylingId) return;
         
+        if (this.theme.locked) {
+            this.showToast("Global Theme Locked - Cannot change card styles");
+            this.closeModal('styleModal');
+            return;
+        }
+
         const isLocked = document.getElementById('styleLocked').checked;
         
         const styles = {
@@ -857,23 +913,28 @@ class App {
         const title = document.getElementById('promptTitle');
         const desc = document.getElementById('promptDesc');
         const btn = document.getElementById('promptConfirmBtn');
+        const area = document.getElementById('promptArea');
 
-        if (action === 'continue') {
+        if (action === 'magic') {
+            title.textContent = "Magic Action";
+            desc.textContent = "Edit text, change styles, or use !action:...";
+            btn.textContent = "Execute";
+            area.placeholder = "e.g., 'Edit Request to be professional', 'Make response bold', 'Merge'";
+        } else if (action === 'continue') {
             title.textContent = "Continue Card";
             desc.textContent = "Instruct the AI on how to continue the response.";
             btn.textContent = "Continue";
+            area.placeholder = "Continue the thought...";
         } else if (action === 'split') {
             title.textContent = "Split Card";
             desc.textContent = "How should the AI split this content?";
             btn.textContent = "Split";
-        } else if (action === 'ai-edit') {
-            title.textContent = "AI Edit";
-            desc.textContent = "What changes do you want?";
-            btn.textContent = "Edit";
+            area.placeholder = "Split into two points...";
         } else if (action === 'merge') {
             title.textContent = "Merge Cards";
             desc.textContent = "Combine selected cards. Instructions?";
             btn.textContent = `Merge (${this.selectedIds.size})`;
+            area.placeholder = "Merge into a summary...";
         }
 
         this.openModal('promptModal');
@@ -895,16 +956,22 @@ class App {
         if (!card) return;
         let userPrompt = "";
 
-        if (action === 'continue') {
+        // LOGIC: "Magic Action" puts the card context + instructions into the prompt.
+        // The AI (via SYSTEM_PROMPT) knows to look for "New Request:" or specific commands.
+        if (action === 'magic') {
+            userPrompt = `Current Request: "${card.q}". Current Response: "${card.r}". INSTRUCTIONS: ${instructions}`;
+            this.sendRequest(userPrompt, id);
+        }
+        else if (action === 'continue') {
             userPrompt = `CONTINUE: Original: "${card.q}". Current: "${card.r}". Instruct: ${instructions}`;
             this.sendRequest(userPrompt, id);
-        } else if (action === 'split') {
+        } 
+        else if (action === 'split') {
             userPrompt = `SPLIT: ${instructions}. Text: ${card.r}`;
             this.sendRequest(userPrompt, null);
-        } else if (action === 'ai-edit') {
-            userPrompt = `EDIT: ${instructions}. Current: ${card.r}`;
-            this.sendRequest(userPrompt, null);
         }
+
+        this.showToast("Processing...");
     }
 
     merge(instructions = "") {
@@ -985,15 +1052,6 @@ class App {
         const desc = document.getElementById('aiThemePrompt').value.trim();
         if (!desc) return;
         
-        if (this.editingId) {
-            const card = this.cards.find(c => c.id === this.editingId);
-            if (card && card.styles && card.styles.locked) {
-                this.showToast("Card Locked - Rejected");
-                this.closeModal('aiThemeModal');
-                return;
-            }
-        }
-
         if (this.theme.locked) {
             this.showToast("Global Theme Locked");
             this.closeModal('aiThemeModal');
@@ -1222,7 +1280,7 @@ Do not output any other text.`;
         r.setProperty('--text', this.theme.text);
         r.setProperty('--border', this.theme.border);
         const brand = document.getElementById('brandPlaceholder');
-        if (brand) brand.textContent = this.theme.name || 'ai-Ndraft';
+        if (brand) brand.textContent = this.theme.name || 'ai-Ncards';
     }
 
     initASR() {
@@ -1306,7 +1364,6 @@ Do not output any other text.`;
     }
 }
 
-// Initialize App
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new App();
     window.app.init();
