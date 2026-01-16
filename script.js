@@ -1,4 +1,4 @@
-const DEFAULT_PROXY_URL = "https://ai-proxy.ai-n.workers.dev/api/generate";
+const DEFAULT_PROXY_URL = "https://cards.ai-n.workers.dev";
 const STORAGE_KEY = "ai_ndraft_data_v2";
 
 // UPDATED PROMPT: "Document Drafter" persona
@@ -1367,4 +1367,5 @@ Do not output any other text.`;
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new App();
     window.app.init();
+
 });
